@@ -2,6 +2,30 @@ import Cocoa
 import ApplicationServices
 import CoreAudio
 
+// MARK: - Editable text field
+//
+// This app runs as an accessory (LSUIElement) with no main menu, so there is
+// no Edit menu to provide the standard ⌘X/⌘C/⌘V/⌘A key equivalents. Without
+// them, text fields in our NSAlert dialogs only support paste via right-click.
+// Routing the editing actions to the field editor through the responder chain
+// restores the expected keyboard shortcuts regardless of activation policy.
+final class EditableTextField: NSTextField {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.type == .keyDown,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command {
+            switch event.charactersIgnoringModifiers {
+            case "x": if NSApp.sendAction(#selector(NSText.cut(_:)),    to: nil, from: self) { return true }
+            case "c": if NSApp.sendAction(#selector(NSText.copy(_:)),   to: nil, from: self) { return true }
+            case "v": if NSApp.sendAction(#selector(NSText.paste(_:)),  to: nil, from: self) { return true }
+            case "a": if NSApp.sendAction(#selector(NSResponder.selectAll(_:)), to: nil, from: self) { return true }
+            case "z": if NSApp.sendAction(Selector(("undo:")),          to: nil, from: self) { return true }
+            default: break
+            }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+}
+
 // MARK: - Config paths
 
 private let configDir  = (NSHomeDirectory() as NSString).appendingPathComponent(".config/speak11")
@@ -1067,7 +1091,7 @@ private let hotkeyCallback: CGEventTapCallBack = { _, type, event, _ in
         alert.informativeText = "Enter a voice ID from elevenlabs.io/voice-library"
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 22))
+        let field = EditableTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 22))
         field.stringValue = config.voiceId
         field.placeholderString = "e.g. pFZP5JQG7iQjIQuC4Bku"
         alert.accessoryView = field
@@ -1116,7 +1140,7 @@ private let hotkeyCallback: CGEventTapCallBack = { _, type, event, _ in
         alert.informativeText = "Milliseconds of silence between sentences (at 1\u{00D7} speed). Set to 0 for no pause."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
+        let field = EditableTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 22))
         field.stringValue = String(config.sentencePause)
         field.placeholderString = "e.g. 400"
         alert.accessoryView = field
@@ -1288,7 +1312,7 @@ private let hotkeyCallback: CGEventTapCallBack = { _, type, event, _ in
                 alert.addButton(withTitle: "Remove")
             }
 
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 22))
+            let field = EditableTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 22))
             if errorMessage == nil, let key = existingKey {
                 if key.count > 8 {
                     let start = key.prefix(4)

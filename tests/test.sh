@@ -4229,12 +4229,25 @@ check "Speak11.swift: passes SPEAK11_MUTE_CHECKED to speak.sh" \
 check "speak.sh: skips mute check when SPEAK11_MUTE_CHECKED=1" \
     "yes" "$(grep -q 'SPEAK11_MUTE_CHECKED' "$SPEAK_SH" && echo "yes" || echo "no")"
 
-# Cmd+V paste support: dialogs with text fields must use .regular activation policy
-check "Speak11.swift: API key dialog enables paste (regular activation)" \
-    "yes" "$(awk '/func showAPIKeyDialog/,/^    }/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'setActivationPolicy(.regular)' && echo "yes" || echo "no")"
+# Cmd+V paste support: the app has no Edit menu (accessory app), so dialog text
+# fields use EditableTextField, which routes ⌘X/⌘C/⌘V/⌘A through the responder chain.
+check "Speak11.swift: EditableTextField subclass exists" \
+    "yes" "$(grep -q 'class EditableTextField: NSTextField' "$SCRIPT_DIR/Speak11.swift" && echo "yes" || echo "no")"
 
-check "Speak11.swift: custom voice dialog enables paste (regular activation)" \
-    "yes" "$(awk '/func customVoice/,/^    }/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'setActivationPolicy(.regular)' && echo "yes" || echo "no")"
+check "Speak11.swift: EditableTextField overrides performKeyEquivalent" \
+    "yes" "$(awk '/class EditableTextField/,/^}/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'performKeyEquivalent' && echo "yes" || echo "no")"
+
+check "Speak11.swift: EditableTextField handles paste" \
+    "yes" "$(awk '/class EditableTextField/,/^}/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'NSText.paste' && echo "yes" || echo "no")"
+
+check "Speak11.swift: API key dialog uses EditableTextField for paste" \
+    "yes" "$(awk '/func showAPIKeyDialog/,/^    }/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'EditableTextField' && echo "yes" || echo "no")"
+
+check "Speak11.swift: sentence pause dialog uses EditableTextField for paste" \
+    "yes" "$(awk '/func editSentencePause/,/^    }/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'EditableTextField' && echo "yes" || echo "no")"
+
+check "Speak11.swift: custom voice dialog uses EditableTextField for paste" \
+    "yes" "$(awk '/func customVoice/,/^    }/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'EditableTextField' && echo "yes" || echo "no")"
 
 check "Speak11.swift: dialogs restore accessory policy via defer" \
     "yes" "$(grep -c 'defer.*setActivationPolicy(.accessory)' "$SCRIPT_DIR/Speak11.swift" | awk '{print ($1 >= 2) ? "yes" : "no"}')"
@@ -4417,7 +4430,7 @@ check "Speak11.swift: Sentence Pause menu item shows current value" \
     "yes" "$(grep -q 'Sentence Pause.*sentencePause' "$SETTINGS_SWIFT" && echo "yes" || echo "no")"
 
 check "Speak11.swift: Sentence Pause uses text input dialog" \
-    "yes" "$(awk '/func editSentencePause/,/^    \}/' "$SETTINGS_SWIFT" | grep -q 'NSTextField' && echo "yes" || echo "no")"
+    "yes" "$(awk '/func editSentencePause/,/^    \}/' "$SETTINGS_SWIFT" | grep -q 'EditableTextField' && echo "yes" || echo "no")"
 
 # speak11-audio.swift: pause_ms field in protocol
 check "speak11-audio.swift: maxSplits is 5 (6 fields)" \
