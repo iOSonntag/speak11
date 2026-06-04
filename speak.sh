@@ -10,6 +10,15 @@
 # Requirements: afplay (built into macOS), curl (for ElevenLabs),
 #   venv python at ~/.local/share/speak11/venv (installed by install.command)
 
+# ── Character encoding ─────────────────────────────────────────────
+# pbpaste (and other tools) emit the standard C/ASCII encoding when no UTF-8
+# locale is set, which silently drops non-ASCII text (ß, umlauts, accents,
+# CJK). GUI-launched apps often have no LANG, so force a UTF-8 character type
+# for the whole pipeline. Only the encoding is changed (region-neutral); any
+# existing UTF-8 locale is left untouched.
+case "${LC_ALL:-}"   in C|POSIX) unset LC_ALL ;; esac
+case "${LC_CTYPE:-}" in ""|C|POSIX) export LC_CTYPE="UTF-8" ;; esac
+
 # ── Configuration ──────────────────────────────────────────────────
 
 # Save env vars before sourcing config (source overwrites same-named vars).

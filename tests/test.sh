@@ -1943,6 +1943,18 @@ check "tts_server.py: cleans up speak11_tts_ temp dirs on startup" \
 
 section "Unicode sanitization"
 
+# pbpaste drops non-ASCII (ß, umlauts, accents) under the C/ASCII encoding that
+# GUI-launched apps get when no LANG is set. speak.sh forces a UTF-8 ctype, and
+# the app passes LC_CTYPE=UTF-8 to the child process.
+check "speak.sh: forces a UTF-8 LC_CTYPE for pbpaste" \
+    "yes" "$(grep -q 'LC_CTYPE="UTF-8"' "$SPEAK_SH" && echo "yes" || echo "no")"
+
+check "speak.sh: UTF-8 ctype set before reading the clipboard" \
+    "yes" "$(awk '/LC_CTYPE="UTF-8"/{c=NR} /Read selected text/{r=NR} END{print (c && r && c<r) ? "yes" : "no"}' "$SPEAK_SH")"
+
+check "Speak11.swift: passes LC_CTYPE=UTF-8 to speak.sh" \
+    "yes" "$(grep -q '"LC_CTYPE": "UTF-8"' "$SCRIPT_DIR/Speak11.swift" && echo "yes" || echo "no")"
+
 check "speak.sh: sanitizes text with iconv before TTS" \
     "yes" "$(grep -q 'iconv -f UTF-8 -t UTF-8//IGNORE' "$SPEAK_SH" && echo "yes" || echo "no")"
 
@@ -4514,6 +4526,17 @@ if type normalize_text &>/dev/null; then
     check "normalize: forests joins (inflected form)" \
         "forests" "$(normalize_text $'for-\nests')"
 
+    # Non-ASCII preservation: ElevenLabs supports many languages, so the
+    # normalizer must never strip German (ß, umlauts) or other accented text.
+    check "normalize: preserves German eszett and umlauts" \
+        "Das Maß für Größe und Spaß." "$(normalize_text 'Das Maß für Größe und Spaß.')"
+
+    check "normalize: preserves uppercase umlauts" \
+        "Über Öl und Äpfel." "$(normalize_text 'Über Öl und Äpfel.')"
+
+    check "normalize: preserves accented Latin text" \
+        "café résumé naïve Zürich" "$(normalize_text 'café résumé naïve Zürich')"
+
     # Line break rejoining
     check "normalize: rejoin mid-sentence line break" \
         "The quick brown fox jumped." "$(normalize_text $'The quick brown\nfox jumped.')"
@@ -5669,6 +5692,10 @@ if type normalize_text &>/dev/null; then
         "where alpha equals 5" \
         "$(normalize_text 'where $\alpha = 5$')"
 
+    check "latex: preserves German text around math" \
+        "Die Größe ist alpha equals 5 für Müller." \
+        "$(normalize_text 'Die Größe ist $\alpha = 5$ für Müller.')"
+
     check "latex: plain text not detected as LaTeX" \
         "The quick brown fox jumped." \
         "$(normalize_text 'The quick brown fox jumped.')"
@@ -6071,6 +6098,11 @@ Hello.')"
         "Title: Introduction. This is important." \
         "$(normalize_text '# Introduction
 This is **important**.')"
+
+    check "markdown: preserves German heading + bold" \
+        "Title: Größe. Das Maß für Spaß und Müller." \
+        "$(normalize_text '# Größe
+Das Maß für **Spaß** und Müller.')"
 
     check "markdown: plain text not detected as Markdown" \
         "Just a normal sentence." \

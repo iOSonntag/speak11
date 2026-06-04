@@ -448,8 +448,11 @@ private let hotkeyCallback: CGEventTapCallBack = { _, type, event, _ in
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/bin/bash")
             task.arguments    = [speakPath]
+            // Force a UTF-8 character type so speak.sh's pbpaste keeps non-ASCII
+            // text (ß, umlauts, accents, CJK). GUI-launched apps often have no
+            // LANG, which would make pbpaste fall back to ASCII and drop them.
             task.environment  = ProcessInfo.processInfo.environment.merging(
-                ["SPEAK11_MUTE_CHECKED": "1"]) { _, new in new }
+                ["SPEAK11_MUTE_CHECKED": "1", "LC_CTYPE": "UTF-8"]) { _, new in new }
 
             if let text = text {
                 let pipe = Pipe()
