@@ -31,8 +31,17 @@ final class EditableTextField: NSTextField {
 private let configDir  = (NSHomeDirectory() as NSString).appendingPathComponent(".config/speak11")
 private let configPath = (configDir as NSString).appendingPathComponent("config")
 private let speakPath  = (NSHomeDirectory() as NSString).appendingPathComponent(".local/bin/speak.sh")
+// User-defined ElevenLabs voices live in their own JSON file (not the
+// bash-sourced `config`) so arbitrary names never need shell escaping.
+private let customVoicesPath = (configDir as NSString).appendingPathComponent("custom_voices.json")
 
 // MARK: - Config model
+
+/// A user-added ElevenLabs voice (a display name + voice ID).
+struct CustomVoice: Codable {
+    var name: String
+    var id: String
+}
 
 struct Config {
     // Backend selection
@@ -41,6 +50,7 @@ struct Config {
 
     // ElevenLabs settings
     var voiceId:         String = "pFZP5JQG7iQjIQuC4Bku"
+    var customVoices:    [CustomVoice] = []
     var modelId:         String = "eleven_flash_v2_5"
     var stability:       Double = 0.5
     var similarityBoost: Double = 0.75
@@ -89,6 +99,11 @@ struct Config {
             default: break
             }
         }
+        // Custom voices live in a separate JSON file.
+        if let data = FileManager.default.contents(atPath: customVoicesPath),
+           let voices = try? JSONDecoder().decode([CustomVoice].self, from: data) {
+            c.customVoices = voices
+        }
         return c
     }
 
@@ -111,6 +126,11 @@ struct Config {
         ]
         try? (lines.joined(separator: "\n") + "\n")
             .write(toFile: configPath, atomically: true, encoding: .utf8)
+
+        // Persist custom voices to their own JSON file.
+        if let data = try? JSONEncoder().encode(customVoices) {
+            try? data.write(to: URL(fileURLWithPath: customVoicesPath), options: .atomic)
+        }
     }
 }
 
@@ -823,14 +843,41 @@ private let hotkeyCallback: CGEventTapCallBack = { _, type, event, _ in
     }
 
     private func buildVoiceItems() -> [NSMenuItem] {
-        let isCustom = !knownVoices.contains { $0.id == config.voiceId }
         var items = knownVoices.map { v in
             item(v.name, #selector(pickVoice(_:)), repr: v.id, on: v.id == config.voiceId)
         }
+
+        // User-added custom voices — selectable like presets (reuse pickVoice).
+        if !config.customVoices.isEmpty {
+            items.append(.separator())
+            for v in config.customVoices {
+                items.append(item(v.name, #selector(pickVoice(_:)),
+                                  repr: v.id, on: v.id == config.voiceId))
+            }
+        }
+
+        // An active voice that is neither a preset nor a saved custom voice
+        // (e.g. set via the ELEVENLABS_VOICE_ID env var or an older config).
+        let isKnown = knownVoices.contains       { $0.id == config.voiceId }
+        let isSaved = config.customVoices.contains { $0.id == config.voiceId }
+        if !isKnown && !isSaved {
+            items.append(.separator())
+            items.append(item("Custom: \(config.voiceId)", #selector(pickVoice(_:)),
+                              repr: config.voiceId, on: true))
+        }
+
         items.append(.separator())
-        let customLabel = isCustom ? "Custom: \(config.voiceId)" : "Custom voice ID…"
-        items.append(item(customLabel, #selector(customVoice), repr: "", on: isCustom))
+        items.append(item("Add Custom Voice\u{2026}", #selector(addCustomVoice), repr: "", on: false))
+        if !config.customVoices.isEmpty {
+            items.append(submenuItem("Remove Custom Voice", items: buildRemoveCustomVoiceItems()))
+        }
         return items
+    }
+
+    private func buildRemoveCustomVoiceItems() -> [NSMenuItem] {
+        config.customVoices.map { v in
+            item(v.name, #selector(removeCustomVoice(_:)), repr: v.id, on: false)
+        }
     }
 
     private func buildLocalVoiceItems() -> [NSMenuItem] {
@@ -1085,24 +1132,54 @@ private let hotkeyCallback: CGEventTapCallBack = { _, type, event, _ in
         scheduleRespeak()
     }
 
-    @objc private func customVoice() {
+    @objc private func addCustomVoice() {
         NSApp.setActivationPolicy(.regular)
         defer { NSApp.setActivationPolicy(.accessory) }
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "Custom Voice ID"
-        alert.informativeText = "Enter a voice ID from elevenlabs.io/voice-library"
+        alert.messageText = "Add Custom Voice"
+        alert.informativeText = "Enter a name and a voice ID from elevenlabs.io/voice-library."
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Cancel")
-        let field = EditableTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 22))
-        field.stringValue = config.voiceId
-        field.placeholderString = "e.g. pFZP5JQG7iQjIQuC4Bku"
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
+
+        // Two stacked fields (name on top, ID below). EditableTextField so ⌘V works.
+        let nameField = EditableTextField(frame: NSRect(x: 0, y: 30, width: 320, height: 22))
+        nameField.placeholderString = "Name (e.g. Antoni)"
+        let idField = EditableTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 22))
+        idField.placeholderString = "Voice ID (e.g. pFZP5JQG7iQjIQuC4Bku)"
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 52))
+        container.addSubview(nameField)
+        container.addSubview(idField)
+        nameField.nextKeyView = idField
+        alert.accessoryView = container
+        alert.window.initialFirstResponder = nameField
+
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let val = field.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !val.isEmpty else { return }
-        config.voiceId = val
+        let id = idField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !id.isEmpty else { return }
+        var name = nameField.stringValue.trimmingCharacters(in: .whitespaces)
+        if name.isEmpty { name = id }
+
+        // Update the name if this ID already exists, otherwise append.
+        if let idx = config.customVoices.firstIndex(where: { $0.id == id }) {
+            config.customVoices[idx].name = name
+        } else {
+            config.customVoices.append(CustomVoice(name: name, id: id))
+        }
+        config.voiceId = id
+        config.save()
+        rebuildMenu()
+        scheduleRespeak()
+    }
+
+    @objc private func removeCustomVoice(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        config.customVoices.removeAll { $0.id == id }
+        // If the removed voice was active, fall back to the default preset.
+        if config.voiceId == id {
+            config.voiceId = knownVoices.first?.id ?? "pFZP5JQG7iQjIQuC4Bku"
+        }
         config.save()
         rebuildMenu()
         scheduleRespeak()

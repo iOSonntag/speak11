@@ -4258,11 +4258,36 @@ check "Speak11.swift: API key dialog uses EditableTextField for paste" \
 check "Speak11.swift: sentence pause dialog uses EditableTextField for paste" \
     "yes" "$(awk '/func editSentencePause/,/^    }/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'EditableTextField' && echo "yes" || echo "no")"
 
-check "Speak11.swift: custom voice dialog uses EditableTextField for paste" \
-    "yes" "$(awk '/func customVoice/,/^    }/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'EditableTextField' && echo "yes" || echo "no")"
+check "Speak11.swift: add custom voice dialog uses EditableTextField for paste" \
+    "yes" "$(awk '/func addCustomVoice/,/^    }/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'EditableTextField' && echo "yes" || echo "no")"
 
 check "Speak11.swift: dialogs restore accessory policy via defer" \
     "yes" "$(grep -c 'defer.*setActivationPolicy(.accessory)' "$SCRIPT_DIR/Speak11.swift" | awk '{print ($1 >= 2) ? "yes" : "no"}')"
+
+# Multiple named custom voices
+check "Speak11.swift: CustomVoice model exists" \
+    "yes" "$(grep -q 'struct CustomVoice' "$SCRIPT_DIR/Speak11.swift" && echo "yes" || echo "no")"
+
+check "Speak11.swift: Config stores customVoices" \
+    "yes" "$(grep -q 'var customVoices' "$SCRIPT_DIR/Speak11.swift" && echo "yes" || echo "no")"
+
+check "Speak11.swift: persists custom voices to JSON" \
+    "yes" "$(grep -q 'custom_voices.json' "$SCRIPT_DIR/Speak11.swift" && echo "yes" || echo "no")"
+
+check "Speak11.swift: addCustomVoice function exists" \
+    "yes" "$(grep -q 'func addCustomVoice' "$SCRIPT_DIR/Speak11.swift" && echo "yes" || echo "no")"
+
+check "Speak11.swift: removeCustomVoice function exists" \
+    "yes" "$(grep -q 'func removeCustomVoice' "$SCRIPT_DIR/Speak11.swift" && echo "yes" || echo "no")"
+
+check "Speak11.swift: custom voices appear in the Voice menu" \
+    "yes" "$(awk '/func buildVoiceItems/,/^    }/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'customVoices' && echo "yes" || echo "no")"
+
+check "Speak11.swift: custom voices reuse pickVoice selector" \
+    "yes" "$(awk '/func buildVoiceItems/,/^    }/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'pickVoice' && echo "yes" || echo "no")"
+
+check "Speak11.swift: addCustomVoice calls scheduleRespeak" \
+    "yes" "$(awk '/func addCustomVoice/,/^    }/' "$SCRIPT_DIR/Speak11.swift" | grep -q 'scheduleRespeak' && echo "yes" || echo "no")"
 
 # API key validation
 check "Speak11.swift: validateAPIKey function exists" \
