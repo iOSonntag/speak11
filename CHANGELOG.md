@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.2.0
+
+### Highlights
+
+**Named custom voice library.** Add multiple custom ElevenLabs voices, each with its own name, straight from the menu bar — they now appear as regular entries in the **Voice** menu instead of a single overwritable slot. A new "Add Custom Voice…" dialog takes a name and a voice ID, and a "Remove Custom Voice" submenu manages them. Voices are stored in `~/.config/speak11/custom_voices.json`.
+
+**Non-ASCII text fixed.** Selections containing German (ß, ä, ö, ü), accents, or other non-ASCII characters are now spoken correctly. When launched from the menu bar, the app had no `LANG` set, so `pbpaste` fell back to ASCII and the characters were mangled and then stripped before reaching ElevenLabs. Speak11 now forces a UTF-8 character type for the clipboard read.
+
+### New features
+
+- **Multiple named custom voices**: add, select, and remove custom ElevenLabs voices from the **Voice** menu; persisted to `custom_voices.json`
+
+### Bug fixes
+
+- **Paste in dialogs**: `⌘V` (and `⌘C`/`⌘X`/`⌘A`) now work in the Add Custom Voice, Sentence Pause, and API Key dialogs. The menu bar app has no Edit menu, so a new `EditableTextField` routes the standard editing shortcuts through the responder chain — previously only right-click → Paste worked.
+- **German / non-ASCII selections dropped**: force a UTF-8 `LC_CTYPE` in `speak.sh`, and pass `LC_CTYPE=UTF-8` to the spawned process from the app, so `pbpaste` keeps non-ASCII text intact
+
 ## v1.1.0
 
 ### Highlights
