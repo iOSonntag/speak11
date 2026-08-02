@@ -6886,6 +6886,116 @@ else
     check "backend: normalize_text function not found" "yes" "no"
 fi
 
+# ── Configurable hotkey ──────────────────────────────────────────
+
+section "Configurable hotkey"
+
+# The tap callback must consult the configured hotkey, not a fixed constant —
+# otherwise rebinding from the menu silently does nothing.
+check "hotkey: callback matches configured code, not a constant" \
+    "yes" "$(awk '/^private let hotkeyCallback/,/^\}$/' "$SETTINGS_SWIFT" \
+        | grep -q 'code == gHotkey.code, flags == gHotkey.flags' && echo "yes" || echo "no")"
+check "hotkey: no hardcoded keycode constant remains" \
+    "no" "$(grep -q 'kHotkeyCode' "$SETTINGS_SWIFT" && echo "yes" || echo "no")"
+
+# Persistence: both halves must round-trip, or a rebind is lost on restart.
+check "hotkey: HOTKEY_CODE in config save" \
+    "yes" "$(grep -q 'HOTKEY_CODE=' "$SETTINGS_SWIFT" && echo "yes" || echo "no")"
+check "hotkey: HOTKEY_FLAGS in config save" \
+    "yes" "$(grep -q 'HOTKEY_FLAGS=' "$SETTINGS_SWIFT" && echo "yes" || echo "no")"
+check "hotkey: HOTKEY_CODE parsed on load" \
+    "yes" "$(grep -q 'case "HOTKEY_CODE"' "$SETTINGS_SWIFT" && echo "yes" || echo "no")"
+check "hotkey: HOTKEY_FLAGS parsed on load" \
+    "yes" "$(grep -q 'case "HOTKEY_FLAGS"' "$SETTINGS_SWIFT" && echo "yes" || echo "no")"
+
+# A hand-edited config naming no modifiers would bind a bare key and eat typing.
+check "hotkey: invalid config falls back to default" \
+    "yes" "$(awk '/static func load\(\)/,/^    \}$/' "$SETTINGS_SWIFT" \
+        | grep -q 'hotkey.isValid' && echo "yes" || echo "no")"
+
+# Recording must suspend the tap, or pressing the current shortcut to rebind it
+# gets consumed and starts speaking instead of registering.
+check "hotkey: editHotkey disables tap while recording" \
+    "yes" "$(awk '/func editHotkey/,/^    \}$/' "$SETTINGS_SWIFT" \
+        | grep -q 'tapEnable(tap: tap, enable: false)' && echo "yes" || echo "no")"
+check "hotkey: editHotkey re-enables tap afterwards" \
+    "yes" "$(awk '/func editHotkey/,/^    \}$/' "$SETTINGS_SWIFT" \
+        | grep -q 'defer.*tapEnable(tap: tap, enable: true)' && echo "yes" || echo "no")"
+check "hotkey: editHotkey updates the live tap state" \
+    "yes" "$(awk '/func editHotkey/,/^    \}$/' "$SETTINGS_SWIFT" \
+        | grep -q 'gHotkey = picked' && echo "yes" || echo "no")"
+check "hotkey: launch syncs tap state from config" \
+    "yes" "$(awk '/func applicationDidFinishLaunching/,/^    \}$/' "$SETTINGS_SWIFT" \
+        | grep -q 'gHotkey = config.hotkey' && echo "yes" || echo "no")"
+
+# Behavioural: compile the real Hotkey struct out of the app and exercise it.
+# Greps above prove the wiring; this proves the logic.
+if $FAST; then
+    printf "        SKIP  behavioural hotkey test (--fast mode)\n"
+elif ! xcrun swiftc --version &>/dev/null; then
+    printf "        SKIP  behavioural hotkey test (swiftc not found)\n"
+else
+    _hkdir=$(mktemp -d)
+    {
+        printf 'import Cocoa\nimport Carbon.HIToolbox\n\n'
+        awk '/^struct Hotkey: Equatable \{/,/^\}$/' "$SETTINGS_SWIFT"
+        cat <<'SWIFT'
+let d = Hotkey.default
+print("display=\(d.display)")
+print("code=\(d.code)")
+print("flags=\(d.serializedFlags)")
+print("roundtrip=\(Hotkey.parseFlags(d.serializedFlags) == d.flags)")
+print("validDefault=\(d.isValid)")
+print("validShiftOnly=\(Hotkey(code: 44, flags: [.maskShift]).isValid)")
+print("validNoMods=\(Hotkey(code: 44, flags: []).isValid)")
+print("space=\(Hotkey(code: 49, flags: [.maskCommand, .maskControl]).display)")
+print("f18=\(Hotkey(code: 0x4F, flags: []).display)")
+print("f13=\(Hotkey(code: 0x69, flags: []).display)")
+print("f20=\(Hotkey(code: 0x5A, flags: []).display)")
+print("validBareF18=\(Hotkey(code: 0x4F, flags: []).isValid)")
+print("validBareF1=\(Hotkey(code: 0x7A, flags: []).isValid)")
+print("validShiftF18=\(Hotkey(code: 0x4F, flags: [.maskShift]).isValid)")
+print("fkeyCount=\(Hotkey.functionKeys.count)")
+print("fkeysAllNamed=\(Hotkey.functionKeys.allSatisfy { Hotkey.keyLabel(for: $0).hasPrefix("F") })")
+SWIFT
+    } > "$_hkdir/hk.swift"
+
+    if xcrun swiftc "$_hkdir/hk.swift" -o "$_hkdir/hk" 2>"$_hkdir/err"; then
+        _hk=$("$_hkdir/hk")
+        _hkget() { printf '%s\n' "$_hk" | grep "^$1=" | cut -d= -f2-; }
+
+        # Default must still be ⌥⇧/ — rebinding is opt-in, not a behaviour change.
+        check "hotkey: default renders as ⌥⇧/"      "⌥⇧/"      "$(_hkget display)"
+        check "hotkey: default keycode is 44"        "44"        "$(_hkget code)"
+        check "hotkey: default flags serialize"      "alt,shift" "$(_hkget flags)"
+        check "hotkey: flags survive save/load"      "true"      "$(_hkget roundtrip)"
+        # Shift alone would swallow every capital letter the user types.
+        check "hotkey: default is valid"             "true"      "$(_hkget validDefault)"
+        check "hotkey: shift-only rejected"          "false"     "$(_hkget validShiftOnly)"
+        check "hotkey: modifier-less rejected"       "false"     "$(_hkget validNoMods)"
+        # Non-printing keys need names; modifiers render in macOS order ⌃⌥⇧⌘.
+        check "hotkey: names non-printing keys"      "⌃⌘Space"   "$(_hkget space)"
+
+        # Function keys bind bare — they emit no character, so consuming one
+        # cannot swallow typing. Fn is never required: macOS sets the function
+        # flag on every F-key event regardless, so it can't be matched on.
+        check "hotkey: F18 accepted without modifiers"  "true"  "$(_hkget validBareF18)"
+        check "hotkey: F1 accepted without modifiers"   "true"  "$(_hkget validBareF1)"
+        check "hotkey: shift+F18 still accepted"        "true"  "$(_hkget validShiftF18)"
+        check "hotkey: F18 renders as F18"              "F18"   "$(_hkget f18)"
+        check "hotkey: F13 renders as F13"              "F13"   "$(_hkget f13)"
+        check "hotkey: F20 renders as F20"              "F20"   "$(_hkget f20)"
+        # F1–F20 must be complete, and every one must have a label — an F-key
+        # missing from specialKeys would render as "#79" in the menu.
+        check "hotkey: F1–F20 all present"              "20"    "$(_hkget fkeyCount)"
+        check "hotkey: every function key has a label"  "true"  "$(_hkget fkeysAllNamed)"
+    else
+        check "hotkey: behavioural test compiles" "yes" "no ($(head -1 "$_hkdir/err"))"
+    fi
+    rm -f "$_hkdir"/hk.swift "$_hkdir"/hk "$_hkdir"/err
+    rmdir "$_hkdir" 2>/dev/null || true
+fi
+
 # ── Summary ──────────────────────────────────────────────────────
 
 printf "\n────────────────────────────────────────────\n"
