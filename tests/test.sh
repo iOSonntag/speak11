@@ -2003,7 +2003,7 @@ check "speak.sh: split_sentences function exists" \
     "yes" "$(grep -q 'split_sentences()' "$SPEAK_SH" && echo "yes" || echo "no")"
 
 check "speak.sh: split_sentences uses regex on sentence boundaries" \
-    "yes" "$(grep -q 're.split' "$SPEAK_SH" && echo "yes" || echo "no")"
+    "yes" "$(grep -qF '(?<=[.!?])' "$SPEAK_SH" && echo "yes" || echo "no")"
 
 check "speak.sh: run_elevenlabs_tts function exists" \
     "yes" "$(grep -q 'run_elevenlabs_tts()' "$SPEAK_SH" && echo "yes" || echo "no")"
@@ -2280,10 +2280,12 @@ except ImportError:
     _ABR = re.compile(r'\b(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc)\. ')
     _p = _ABR.sub(lambda m: m.group(1) + '\x00 ', text)
     _p = re.sub(r'\b([A-Z])\. ', lambda m: m.group(1) + '\x00 ', _p)
+    _MON = 'Januar|Februar|M\xe4rz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember'
+    _p = re.sub(r'\b(\d{1,2})\. (?=(?:' + _MON + r')\b)', lambda m: m.group(1) + '\x00 ', _p)
     parts = [p.replace('\x00', '.') for p in re.split(r'(?<=[.!?])\s+', _p)]
 for p in parts:
     p = p.strip()
-    if p: print(p)
+    if p: print(' '.join(p.split()))
 " <<< "$1" 2>/dev/null || printf '%s\n' "$1"
 }
 
@@ -2414,6 +2416,8 @@ except ImportError:
     _ABR = re.compile(r'\b(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc)\. ')
     _p = _ABR.sub(lambda m: m.group(1) + '\x00 ', text)
     _p = re.sub(r'\b([A-Z])\. ', lambda m: m.group(1) + '\x00 ', _p)
+    _MON = 'Januar|Februar|M\xe4rz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember'
+    _p = re.sub(r'\b(\d{1,2})\. (?=(?:' + _MON + r')\b)', lambda m: m.group(1) + '\x00 ', _p)
     parts = [p.replace('\x00', '.') for p in re.split(r'(?<=[.!?])\s+', _p)]
 pos = 0
 for p in parts:
@@ -2423,14 +2427,15 @@ for p in parts:
     idx = text.find(p, pos)
     if idx == -1:
         idx = pos
-    print(f'{idx}\t{len(p)}\t{p}')
+    flat = ' '.join(p.split())
+    print(f'{idx}\t{len(p)}\t{flat}')
     pos = idx + len(p)
 " <<< "$1" 2>/dev/null
 }
 
 # Verify speak.sh split_sentences uses offset format
 check "split_sentences outputs offset format" \
-    "yes" "$(grep -q "print(f'" "$SPEAK_SH" && grep -q 'idx.*len(p)' "$SPEAK_SH" && echo "yes" || echo "no")"
+    "yes" "$(grep -q "print(f'" "$SPEAK_SH" && grep -q 'idx.*len(sentence)' "$SPEAK_SH" && echo "yes" || echo "no")"
 
 # Two sentences: verify format and offset computation
 _OFF_RESULT=$(_test_split_offsets "Hello. World.")
@@ -2448,6 +2453,197 @@ check "offset: repeated sentences advance correctly" \
 _OFF_RESULT=$(_test_split_offsets "David Frum: Hello, and welcome to The David Frum Show. I'm David Frum, a staff writer at The Atlantic.")
 check "offset: David Frum second sentence at 55" \
     "55" "$(echo "$_OFF_RESULT" | sed -n '2p' | cut -f1)"
+
+# ── 46c. One record per line (multi-line sentences) ─────────────
+
+section "Sentence splitting: one record per line"
+
+# A sentence may span newlines (a heading or salutation with no terminal
+# punctuation sits directly above the paragraph that follows).  The playback
+# loops read one physical line per iteration and skip records whose sentence
+# field is empty, so a record printed across several lines silently loses
+# every line after the first.  Run the real function from speak.sh through
+# the real reader loop.
+#
+# _AUDIO_TOOL is pinned to a path that does not exist so these assertions do
+# not depend on whether speak11-audio has been compiled: detection is then
+# unavailable and every paragraph falls back to the German ruleset, which is
+# the documented degradation path.  detect-lang itself is covered in 46d.
+_real_split() (
+    VENV_PYTHON="${VENV_PYTHON:-$HOME/.local/share/speak11/venv/bin/python3}"
+    _AUDIO_TOOL="/nonexistent/speak11-audio"
+    eval "$(awk '/^split_sentences\(\)/,/^}$/' "$SPEAK_SH")"
+    split_sentences "$1"
+)
+
+# Count records the playback loops would drop ([ -z "$_SENTENCE" ] && continue)
+_count_dropped() {
+    local dropped=0
+    while IFS=$'\t' read -r _o _l _s; do
+        [ -z "$_s" ] && dropped=$((dropped + 1))
+    done <<< "$1"
+    echo "$dropped"
+}
+
+_MULTILINE="Heading With No Period
+Dear Mr. Smith,
+
+this paragraph follows a heading and must still be spoken. Next sentence here."
+
+_ML_RESULT=$(_real_split "$_MULTILINE")
+
+check "multiline: no record is dropped by the reader loop" \
+    "0" "$(_count_dropped "$_ML_RESULT")"
+
+check "multiline: every output line has 3 tab-separated fields" \
+    "yes" "$(echo "$_ML_RESULT" | awk -F'\t' 'NF!=3{bad=1} END{print bad?"no":"yes"}')"
+
+check "multiline: paragraph text survives the split" \
+    "1" "$(echo "$_ML_RESULT" | grep -c 'must still be spoken')"
+
+# Paragraph-first splitting: a blank line is a sentence boundary in any
+# language, so the heading must NOT be glued to the paragraph below it even
+# though the heading has no terminal punctuation.
+check "multiline: blank line separates heading from next paragraph" \
+    "0" "$(echo "$_ML_RESULT" | grep -c 'Heading With No Period.*this paragraph follows')"
+
+check "multiline: heading and salutation join across a single newline" \
+    "1" "$(echo "$_ML_RESULT" | grep -c 'Heading With No Period Dear Mr. Smith,')"
+
+# The strongest invariant: offset/len must index the ORIGINAL text exactly,
+# because Speak11.swift computes the respeak position from them
+# (charOffset + sentenceLen * ratio).  Slice the source at each record and
+# compare with the flattened field.
+_check_offsets() {
+    local py="${VENV_PYTHON:-$HOME/.local/share/speak11/venv/bin/python3}"
+    [ -x "$py" ] || py=python3
+    printf '%s' "$1" | "$py" -c '
+import sys
+text = sys.argv[1]
+bad = 0
+for line in sys.stdin.read().splitlines():
+    parts = line.split("\t", 2)
+    if len(parts) != 3:
+        bad += 1
+        continue
+    off, ln, sent = int(parts[0]), int(parts[1]), parts[2]
+    if " ".join(text[off:off + ln].split()) != sent:
+        bad += 1
+print("ok" if bad == 0 else "%d mismatched" % bad)
+' "$2" 2>/dev/null || echo "error"
+}
+
+check "multiline: offsets index the original text exactly" \
+    "ok" "$(_check_offsets "$_ML_RESULT" "$_MULTILINE")"
+
+# Ordinal dates: "30. Juni 2026" is one sentence, not two
+check "ordinal date: German date does not split" \
+    "2" "$(echo "$(_run_split "Der Vortrag war für den 30. Juni 2026 geplant. Er fiel aus.")" | wc -l | tr -d ' ')"
+
+check "ordinal date: umlaut month does not split" \
+    "1" "$(echo "$(_run_split "Der Termin ist am 3. März 2026 vorgesehen.")" | wc -l | tr -d ' ')"
+
+# A number that really does end a sentence still splits
+check "ordinal date: sentence-ending number still splits" \
+    "2" "$(echo "$(_run_split "We counted to 10. Then we stopped.")" | wc -l | tr -d ' ')"
+
+# Numeric dates are atomic — no segmenter keeps "30.06." intact on its own,
+# so speak.sh masks the inner periods before segmenting.  A cut here would
+# drop a 400ms pause into the middle of a date.
+check "numeric date: truncated date does not split" \
+    "1" "$(_real_split "Der Termin am 30.06. findet trotzdem statt." | wc -l | tr -d ' ')"
+
+check "numeric date: full date does not split" \
+    "1" "$(_real_split "Das Treffen war am 30.06.2020 in Bremen." | wc -l | tr -d ' ')"
+
+# ...but a date that really does end a sentence still splits
+check "numeric date: sentence-ending date still splits" \
+    "2" "$(_real_split "Das Treffen war am 30.06.2020. Danach kam nichts." | wc -l | tr -d ' ')"
+
+check "numeric date: masking leaves the text unchanged" \
+    "1" "$(_real_split "Das Treffen war am 30.06.2020 in Bremen." | grep -c '30\.06\.2020')"
+
+# Structural: speak.sh flattens records before printing
+check "speak.sh: split_sentences flattens records to one line" \
+    "yes" "$(awk '/^split_sentences\(\)/,/^}$/' "$SPEAK_SH" | grep -q "join(sentence.split())" && echo "yes" || echo "no")"
+
+# Structural: paragraphs are cut before any language or segmenter is involved
+check "speak.sh: split_sentences cuts paragraphs first" \
+    "yes" "$(awk '/^split_sentences\(\)/,/^}$/' "$SPEAK_SH" | grep -qF "finditer(r'\n[ \t]*\n'" && echo "yes" || echo "no")"
+
+# Structural: a low-confidence paragraph must not outvote the document
+check "speak.sh: paragraph language needs a confidence floor" \
+    "yes" "$(awk '/^split_sentences\(\)/,/^}$/' "$SPEAK_SH" | grep -q 'conf >= MIN_CONFIDENCE' && echo "yes" || echo "no")"
+
+# Structural: German is the fallback ruleset (it under-splits English mildly,
+# where the English ruleset over-splits German badly)
+check "speak.sh: falls back to the German ruleset" \
+    "yes" "$(awk '/^split_sentences\(\)/,/^}$/' "$SPEAK_SH" | grep -q "FALLBACK = 'de'" && echo "yes" || echo "no")"
+
+# ── 46d. Language detection (speak11-audio detect-lang) ─────────
+
+section "Language detection"
+
+_AUDIO_SWIFT="$SCRIPT_DIR/speak11-audio.swift"
+
+check "speak11-audio.swift: detect-lang subcommand exists" \
+    "yes" "$(grep -q 'case "detect-lang"' "$_AUDIO_SWIFT" && echo "yes" || echo "no")"
+
+check "speak11-audio.swift: constrains detection to en/de" \
+    "yes" "$(grep -q 'languageConstraints = detectLanguages' "$_AUDIO_SWIFT" && echo "yes" || echo "no")"
+
+check "speak11-audio.swift: emits confidence alongside language" \
+    "yes" "$(grep -q 'languageHypotheses' "$_AUDIO_SWIFT" && echo "yes" || echo "no")"
+
+check "install.command: cloud-only venv installs pysbd" \
+    "2" "$(grep -c 'ftfy pylatexenc pysbd' "$SCRIPT_DIR/install.command" || true)"
+
+# Functional: compile detect-lang and run it (slow — skipped in --fast)
+if $FAST; then
+    printf "  SKIP  detect-lang functional tests (--fast mode)\n"
+elif ! xcrun swiftc --version >/dev/null 2>&1; then
+    printf "  SKIP  detect-lang functional tests (swiftc unavailable)\n"
+else
+    _DL_BIN="$(mktemp -d)/speak11-audio"
+    if xcrun swiftc "$_AUDIO_SWIFT" -o "$_DL_BIN" -O 2>/dev/null; then
+        # NUL-separated records in, one "lang<TAB>confidence" line per record out
+        _dl() { printf '%s' "$1" | "$_DL_BIN" detect-lang | cut -f1; }
+
+        check "detect-lang: German prose" \
+            "de" "$(_dl "Sehr geehrter Herr Meyer, anbei finden Sie den Bericht.")"
+
+        check "detect-lang: English prose" \
+            "en" "$(_dl "The deployment failed because the health check timed out.")"
+
+        # Capitalization must not matter — this is what rules out a
+        # "lowercase word cannot start a sentence" heuristic
+        check "detect-lang: all-lowercase German" \
+            "de" "$(_dl "das war komisch. ich habe nichts gemacht. keine ahnung warum")"
+
+        check "detect-lang: German without umlauts" \
+            "de" "$(_dl "Bitte pruefen Sie das Angebot und geben Sie mir Bescheid.")"
+
+        # Undetectable input reports "und" so the caller falls back
+        check "detect-lang: digits are undetectable" \
+            "und" "$(_dl "30.06.2020")"
+
+        check "detect-lang: empty record is undetectable" \
+            "und" "$(_dl "")"
+
+        # Batching: N records in, N lines out, one process
+        check "detect-lang: batches NUL-separated records" \
+            "de|en|de" "$(printf 'Guten Tag zusammen\x00Good morning everyone\x00Vielen Dank dafuer' \
+                | "$_DL_BIN" detect-lang | cut -f1 | tr '\n' '|' | sed 's/|$//')"
+
+        check "detect-lang: reports a confidence per record" \
+            "yes" "$(printf 'Sehr geehrter Herr Meyer' | "$_DL_BIN" detect-lang \
+                | awk -F'\t' '{print ($2 > 0.5) ? "yes" : "no"}')"
+
+        rm -rf "$(dirname "$_DL_BIN")"
+    else
+        printf "  SKIP  detect-lang functional tests (compile failed)\n"
+    fi
+fi
 
 # ── 47. Temp file lifecycle ──────────────────────────────────────
 
